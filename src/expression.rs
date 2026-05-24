@@ -594,7 +594,13 @@ fn call_function(
             },
             |def| invoke_function(&def, this_value, args, heap.clone(), fuel),
         ),
-        _other => Ok((
+        Value::Native(native_fn) => native_fn(args, this_value.clone(), heap, fuel),
+        Value::Undefined
+        | Value::Null
+        | Value::Boolean(_)
+        | Value::Number(_)
+        | Value::String(_)
+        | Value::Object(_) => Ok((
             Outcome::Throw(type_error("called value is not a function")),
             heap,
             fuel,

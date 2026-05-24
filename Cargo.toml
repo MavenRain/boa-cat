@@ -1,8 +1,8 @@
 [package]
 name = "boa-cat"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
-description = "Tree-walking ECMAScript interpreter built on ecma-syntax-cat. Evaluates Script programs to Values with a persistent heap and lexical environment. No mut, no Rc/Arc, no interior mutability, no panics, exhaustive matches. Comp-cat-rs reformulation of the Boa engine core, targeting Tauri integration."
+description = "Tree-walking ECMAScript interpreter built on ecma-syntax-cat. Evaluates Script programs to Values with a persistent heap and lexical environment, plus native (Rust-implemented) callables for embedder-supplied built-ins. No mut, no Rc/Arc, no interior mutability, no panics, exhaustive matches. Comp-cat-rs reformulation of the Boa engine core, targeting Tauri integration."
 license = "MIT OR Apache-2.0"
 keywords = ["ecmascript", "javascript", "interpreter", "boa", "type-driven"]
 categories = ["development-tools", "compilers"]

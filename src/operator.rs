@@ -134,7 +134,7 @@ fn type_of(value: &Value) -> String {
         Value::Number(_) => "number",
         Value::String(_) => "string",
         Value::Object(_) => "object",
-        Value::Function(_) => "function",
+        Value::Function(_) | Value::Native(_) => "function",
     }
     .to_owned()
 }

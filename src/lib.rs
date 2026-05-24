@@ -31,6 +31,10 @@
 #![allow(clippy::cast_possible_truncation)]
 #![allow(clippy::cast_sign_loss)]
 #![allow(clippy::cast_possible_wrap)]
+// Native callables are compared by fn-pointer address; this is good
+// enough for equality (you get true iff you stored the same registry
+// entry twice) and avoids ad-hoc PartialEq for the whole Value enum.
+#![allow(unpredictable_function_pointer_comparisons)]
 
 pub mod coercion;
 pub mod completion;
@@ -49,8 +53,9 @@ use ecma_lex_cat::lex;
 use ecma_parse_cat::parse_script;
 use ecma_syntax_cat::program::{Program, ProgramKind};
 
+pub use env::Binding;
 pub use error::Error;
-pub use value::Value;
+pub use value::{Cell, NativeFn, Value};
 
 use crate::completion::Completion;
 use crate::env::Env;
@@ -101,16 +106,32 @@ fn pipeline(source: &str, fuel: Fuel) -> Result<(Value, Heap), Error> {
     evaluate_program(&program, fuel)
 }
 
-/// Evaluate an already-parsed program with `fuel`.
+/// Evaluate an already-parsed program with `fuel`, starting from the
+/// engine's default initial environment (`undefined`, `NaN`, `Infinity`).
 ///
 /// # Errors
 ///
 /// See [`Error`].
 pub fn evaluate_program(program: &Program, fuel: Fuel) -> Result<(Value, Heap), Error> {
+    evaluate_program_with(program, initial_env(), Heap::new(), fuel)
+}
+
+/// Evaluate an already-parsed program in a caller-supplied environment,
+/// heap, and fuel.  Used by downstream crates (e.g. `ecma-runtime-cat`)
+/// to pre-populate global bindings with native callables and host objects
+/// before evaluation.
+///
+/// # Errors
+///
+/// See [`Error`].
+pub fn evaluate_program_with(
+    program: &Program,
+    env: Env,
+    heap: Heap,
+    fuel: Fuel,
+) -> Result<(Value, Heap), Error> {
     match program.value() {
         ProgramKind::Script { body } => {
-            let env = initial_env();
-            let heap = Heap::new();
             eval_block(body, &env, heap, fuel).and_then(|(completion, heap, _env, _fuel)| {
                 let value = match completion {
                     Completion::Normal(v) | Completion::Return(v) => Ok(v),

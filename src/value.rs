@@ -140,7 +140,24 @@ pub enum Value {
     Object(ObjectId),
     /// A handle to a heap-allocated function.
     Function(FunctionId),
+    /// A native (Rust-implemented) callable.  Native callables receive
+    /// their arguments, a `this` binding, the current heap, and the fuel
+    /// budget, and return the standard expression-evaluation result.
+    Native(NativeFn),
 }
+
+/// Signature of a native (Rust-implemented) callable.
+///
+/// `args` are the call's positional arguments after evaluation; `this`
+/// is the binding the call site selected (the method receiver for
+/// `obj.method(...)`, or `Undefined` for plain calls); `heap` and `fuel`
+/// thread the persistent state.
+pub type NativeFn = fn(
+    args: Vec<Value>,
+    this: Value,
+    heap: crate::heap::Heap,
+    fuel: crate::fuel::Fuel,
+) -> crate::outcome::EvalResult;
 
 impl Eq for Value {}
 
@@ -154,6 +171,7 @@ impl std::fmt::Display for Value {
             Self::String(s) => write!(f, "{s:?}"),
             Self::Object(id) => write!(f, "{id}"),
             Self::Function(id) => write!(f, "{id}"),
+            Self::Native(_) => f.write_str("function [native code]"),
         }
     }
 }
