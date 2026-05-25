@@ -11,7 +11,7 @@ use ecma_syntax_cat::operator::{
 };
 use ecma_syntax_cat::pattern::Pattern;
 
-use crate::coercion::{to_boolean, to_number, to_property_key, to_string};
+use crate::coercion::{to_boolean, to_number, to_property_key, to_string, to_uint32};
 use crate::env::{Binding, Env};
 use crate::error::Error;
 use crate::fuel::Fuel;
@@ -273,13 +273,7 @@ fn collect_spread_items(value: &Value, heap: &Heap) -> Vec<Value> {
 }
 
 fn spread_array_object(obj: &Object) -> Vec<Value> {
-    let length = obj
-        .get("length")
-        .and_then(|v| match v {
-            Value::Number(n) => Some(*n as u64),
-            _other => None,
-        })
-        .unwrap_or(0);
+    let length = obj.get("length").map_or(0, to_uint32);
     (0..length)
         .map(|i| {
             obj.get(&format!("{i}"))
@@ -290,13 +284,14 @@ fn spread_array_object(obj: &Object) -> Vec<Value> {
 }
 
 fn build_array_object(values: &[Value]) -> Object {
+    let length = u32::try_from(values.len()).unwrap_or(u32::MAX);
     let map: BTreeMap<String, Value> = values
         .iter()
         .enumerate()
         .map(|(i, v)| (format!("{i}"), v.clone()))
         .chain(std::iter::once((
             "length".to_owned(),
-            Value::Number(values.len() as f64),
+            Value::Number(f64::from(length)),
         )))
         .collect();
     Object::from_properties(map)
@@ -474,7 +469,8 @@ fn access_property(object: &Value, key: &str, heap: &Heap) -> Outcome {
 
 fn string_member(s: &str, key: &str) -> Outcome {
     if key == "length" {
-        Outcome::Normal(Value::Number(s.chars().count() as f64))
+        let length = u32::try_from(s.chars().count()).unwrap_or(u32::MAX);
+        Outcome::Normal(Value::Number(f64::from(length)))
     } else {
         key.parse::<usize>()
             .ok()

@@ -83,7 +83,11 @@ pub fn to_property_key(value: &Value, heap: &Heap) -> String {
 }
 
 /// `ToInt32(value)` per ECMA-262.
+///
+/// The euclidean-modulo `2^32` reduction guarantees the result fits in
+/// `i32`; the inner `as i32` is the spec's defined narrowing.
 #[must_use]
+#[allow(clippy::cast_possible_truncation)]
 pub fn to_int32(value: &Value) -> i32 {
     let n = to_number(value);
     if n.is_finite() {
@@ -100,7 +104,11 @@ pub fn to_int32(value: &Value) -> i32 {
 }
 
 /// `ToUint32(value)` per ECMA-262.
+///
+/// The euclidean-modulo `2^32` reduction guarantees the result fits in
+/// `u32`; the `as u32` is the spec's defined narrowing.
 #[must_use]
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 pub fn to_uint32(value: &Value) -> u32 {
     let n = to_number(value);
     if n.is_finite() {
