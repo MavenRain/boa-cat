@@ -101,14 +101,93 @@ fn try_catch_finally() -> Result<(), Error> {
     )
 }
 
-// v0.3 accessor-property tests use the lower-level
+#[test]
+fn getter_invokes_on_read_in_js_literal() -> Result<(), Error> {
+    // v0.3.1 (ecma-parse-cat 0.2 dep bump): `{ get x() {} }`
+    // literal syntax now reaches the engine's accessor dispatch
+    // (the 0.3.0 engine path that previously only fired for
+    // Rust-installed accessors via `Object::with_accessor`).
+    // The getter runs every read; `x + x` proves we got the
+    // return value (7) and not the function itself (14 vs NaN).
+    assert_number(
+        &eval("const o = { get x() { return 7; } }; o.x + o.x")?,
+        14.0,
+    )
+}
+
+#[test]
+fn setter_invokes_on_write_in_js_literal() -> Result<(), Error> {
+    // Setter writes a backing variable; the assignment expression
+    // still evaluates to the RHS regardless of what the setter
+    // returns.
+    assert_number(
+        &eval(
+            "let backing = 0;
+            const o = {
+                get x() { return backing; },
+                set x(v) { backing = v + 1; }
+            };
+            o.x = 5;
+            o.x",
+        )?,
+        6.0,
+    )
+}
+
+#[test]
+fn data_init_can_replace_earlier_accessor_in_js_literal() -> Result<(), Error> {
+    // `{ get x() {}, x: 1 }` -- the later Init wins.
+    assert_number(
+        &eval("const o = { get x() { return 42; }, x: 1 }; o.x")?,
+        1.0,
+    )
+}
+
+#[test]
+fn accessor_can_replace_earlier_data_init_in_js_literal() -> Result<(), Error> {
+    // `{ x: 1, get x() {} }` -- the later Get wins, x becomes
+    // the accessor.
+    assert_number(
+        &eval("const o = { x: 1, get x() { return 42; } }; o.x")?,
+        42.0,
+    )
+}
+
+#[test]
+fn separate_get_and_set_combine_on_same_key_in_js_literal() -> Result<(), Error> {
+    // Two members for the same key build a combined accessor
+    // with both halves populated.
+    assert_number(
+        &eval(
+            "let backing = 0;
+            const o = {
+                get x() { return backing; },
+                set x(v) { backing = v * 2; }
+            };
+            o.x = 5;
+            o.x",
+        )?,
+        10.0,
+    )
+}
+
+#[test]
+fn shorthand_method_in_js_literal() -> Result<(), Error> {
+    // `{ greet() { return 1; } }` -- shorthand methods are
+    // emitted as `ObjectPropertyKind::Method` and the engine
+    // treats them as data properties holding a function value.
+    assert_number(
+        &eval("const o = { greet() { return 7; } }; o.greet() + o.greet()")?,
+        14.0,
+    )
+}
+
+// v0.3 accessor-property tests using the lower-level
 // `evaluate_program_with` API to install an object with an accessor
-// pair from Rust, then run JS against it.  This sidesteps
-// ecma-parse-cat 0.1's lack of getter/setter object-literal syntax
-// (it only emits `ObjectPropertyKind::Init`); the engine itself
-// dispatches accessor reads/writes correctly, which is what these
-// tests pin down.  Once the parser grows getter/setter support, the
-// same scenarios can also be expressed in pure JS.
+// pair from Rust, then run JS against it.  These remain useful for
+// covering pure-Rust accessor installations (the path web-api-cat
+// uses to bridge `document.cookie`); they exercise the same engine
+// dispatch path as the JS-literal tests above.
 mod accessor_dispatch {
     use boa_cat::Error;
     use boa_cat::env::Env;

@@ -1,8 +1,8 @@
 [package]
 name = "boa-cat"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2024"
-description = "Tree-walking ECMAScript interpreter built on ecma-syntax-cat.  v0.3.0 adds accessor-property support at the engine level: `Object::with_accessor(key, AccessorPair)` installs a getter/setter pair, and `obj.key` / `obj.key = value` dispatch through the pair instead of doing plain data read/write.  Embedders (web-api-cat etc.) can now wire DOM accessors like `document.cookie` via native getter/setter functions.  Object-literal `{ get x() {} }` syntax remains gated on ecma-parse-cat learning to emit `ObjectPropertyKind::Get/Set` (the engine handles those AST variants already)."
+description = "Tree-walking ECMAScript interpreter built on ecma-syntax-cat.  v0.3.0 added accessor-property support at the engine level (`Object::with_accessor`, getter/setter dispatch on read/write).  v0.3.1 picks up ecma-parse-cat 0.2 so the same dispatch path now also fires for accessor / shorthand-method object-literal syntax (`{ get x() {} }` / `{ set x(v) {} }` / `{ foo() {} }`) in user-provided JS source -- the engine already handled those AST variants in 0.3.0, only the parser was holding it back."
 license = "MIT OR Apache-2.0"
 keywords = ["ecmascript", "javascript", "interpreter", "boa", "type-driven"]
 categories = ["development-tools", "compilers"]
@@ -11,7 +11,7 @@ categories = ["development-tools", "compilers"]
 comp-cat-rs = "0.5"
 ecma-syntax-cat = "0.1"
 ecma-lex-cat = "0.1"
-ecma-parse-cat = "0.1"
+ecma-parse-cat = "0.2"
 
 [dev-dependencies]
 proptest = "1"
