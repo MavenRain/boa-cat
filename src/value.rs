@@ -178,44 +178,141 @@ impl std::fmt::Display for Value {
 
 /// A heap-allocated object: a string-keyed map of property values.  Arrays
 /// are objects with numeric string keys plus a `length` property.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// v0.3 adds a parallel accessor map: any key present in `accessors`
+/// is a getter/setter property (the engine invokes the getter on
+/// `obj.key` reads and the setter on `obj.key = value` writes).
+/// Data and accessor maps are mutually exclusive by key -- writing a
+/// data value via [`Self::with`] evicts any existing accessor on the
+/// same key, and installing an accessor via [`Self::with_accessor`]
+/// evicts any existing data value.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Object {
     properties: BTreeMap<String, Value>,
+    accessors: BTreeMap<String, AccessorPair>,
+}
+
+/// The getter / setter pair backing an accessor property.  Either
+/// half may be absent: a getter-only accessor returns `undefined`
+/// on assignment in non-strict mode; a setter-only accessor returns
+/// `undefined` on read.  Each function value is whatever
+/// [`Value::Function`] or [`Value::Native`] the call site supplied.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct AccessorPair {
+    get: Option<Value>,
+    set: Option<Value>,
+}
+
+impl AccessorPair {
+    /// Build an accessor with the given getter / setter halves.
+    #[must_use]
+    pub fn new(get: Option<Value>, set: Option<Value>) -> Self {
+        Self { get, set }
+    }
+
+    /// The getter, if any.
+    #[must_use]
+    pub fn get_fn(&self) -> Option<&Value> {
+        self.get.as_ref()
+    }
+
+    /// The setter, if any.
+    #[must_use]
+    pub fn set_fn(&self) -> Option<&Value> {
+        self.set.as_ref()
+    }
+
+    /// Return a new pair with the getter replaced.
+    #[must_use]
+    pub fn with_get(&self, get: Value) -> Self {
+        Self {
+            get: Some(get),
+            set: self.set.clone(),
+        }
+    }
+
+    /// Return a new pair with the setter replaced.
+    #[must_use]
+    pub fn with_set(&self, set: Value) -> Self {
+        Self {
+            get: self.get.clone(),
+            set: Some(set),
+        }
+    }
 }
 
 impl Object {
     /// An empty object.
     #[must_use]
     pub fn empty() -> Self {
+        Self::default()
+    }
+
+    /// Build an object from the given data-property map.  Accessor
+    /// properties are not installed here; use
+    /// [`Self::with_accessor`] for those.
+    #[must_use]
+    pub fn from_properties(properties: BTreeMap<String, Value>) -> Self {
         Self {
-            properties: BTreeMap::new(),
+            properties,
+            accessors: BTreeMap::new(),
         }
     }
 
-    /// Build an object from the given property map.
-    #[must_use]
-    pub fn from_properties(properties: BTreeMap<String, Value>) -> Self {
-        Self { properties }
-    }
-
-    /// Look up a property by name.
+    /// Look up a data property by name.  Returns `None` for absent
+    /// keys and for accessor properties (use [`Self::accessor`] to
+    /// reach those).
     #[must_use]
     pub fn get(&self, key: &str) -> Option<&Value> {
         self.properties.get(key)
     }
 
-    /// All properties in name order.
+    /// All data properties in name order.  Accessor properties are
+    /// not surfaced here; this preserves the v0.2 caller contract
+    /// (e.g. `JSON.stringify` enumerates data properties only).
     #[must_use]
     pub fn properties(&self) -> &BTreeMap<String, Value> {
         &self.properties
     }
 
-    /// Return a copy of the object with `key` set to `value`.
+    /// Look up an accessor property by name.
+    #[must_use]
+    pub fn accessor(&self, key: &str) -> Option<&AccessorPair> {
+        self.accessors.get(key)
+    }
+
+    /// All accessor properties in name order.
+    #[must_use]
+    pub fn accessors(&self) -> &BTreeMap<String, AccessorPair> {
+        &self.accessors
+    }
+
+    /// Return a copy of the object with `key` set to a data property
+    /// holding `value`.  Any existing accessor on `key` is evicted.
     #[must_use]
     pub fn with(&self, key: String, value: Value) -> Self {
-        let mut next = self.properties.clone();
-        let _ = next.insert(key, value);
-        Self { properties: next }
+        let mut next_props = self.properties.clone();
+        let mut next_accs = self.accessors.clone();
+        let _ = next_accs.remove(&key);
+        let _ = next_props.insert(key, value);
+        Self {
+            properties: next_props,
+            accessors: next_accs,
+        }
+    }
+
+    /// Return a copy of the object with `key` set to the given
+    /// accessor pair.  Any existing data value on `key` is evicted.
+    #[must_use]
+    pub fn with_accessor(&self, key: String, pair: AccessorPair) -> Self {
+        let mut next_props = self.properties.clone();
+        let mut next_accs = self.accessors.clone();
+        let _ = next_props.remove(&key);
+        let _ = next_accs.insert(key, pair);
+        Self {
+            properties: next_props,
+            accessors: next_accs,
+        }
     }
 }
 

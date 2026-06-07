@@ -1,8 +1,8 @@
 [package]
 name = "boa-cat"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2024"
-description = "Tree-walking ECMAScript interpreter built on ecma-syntax-cat. Evaluates Script programs to Values with a persistent heap and lexical environment, plus native (Rust-implemented) callables for embedder-supplied built-ins. No mut, no Rc/Arc, no interior mutability, no panics, exhaustive matches. Comp-cat-rs reformulation of the Boa engine core, targeting Tauri integration."
+description = "Tree-walking ECMAScript interpreter built on ecma-syntax-cat.  v0.3.0 adds accessor-property support at the engine level: `Object::with_accessor(key, AccessorPair)` installs a getter/setter pair, and `obj.key` / `obj.key = value` dispatch through the pair instead of doing plain data read/write.  Embedders (web-api-cat etc.) can now wire DOM accessors like `document.cookie` via native getter/setter functions.  Object-literal `{ get x() {} }` syntax remains gated on ecma-parse-cat learning to emit `ObjectPropertyKind::Get/Set` (the engine handles those AST variants already)."
 license = "MIT OR Apache-2.0"
 keywords = ["ecmascript", "javascript", "interpreter", "boa", "type-driven"]
 categories = ["development-tools", "compilers"]

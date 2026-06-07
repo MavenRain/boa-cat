@@ -55,7 +55,7 @@ use ecma_syntax_cat::program::{Program, ProgramKind};
 
 pub use env::Binding;
 pub use error::Error;
-pub use value::{Cell, NativeFn, Value};
+pub use value::{AccessorPair, Cell, NativeFn, Value};
 
 use crate::completion::Completion;
 use crate::env::Env;

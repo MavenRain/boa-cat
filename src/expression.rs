@@ -298,37 +298,105 @@ fn build_array_object(values: &[Value]) -> Object {
 }
 
 fn eval_object(properties: &[ObjectMember], env: &Env, heap: Heap, fuel: Fuel) -> EvalResult {
-    collect_object_members(properties, 0, BTreeMap::new(), env, heap, fuel).map(
+    collect_object_members(properties, 0, ObjectAcc::default(), env, heap, fuel).map(
         |(outcome, heap, fuel)| match outcome {
             ObjectOutcome::Throw(v) => (Outcome::Throw(v), heap, fuel),
-            ObjectOutcome::Map(map) => {
-                let (id, heap) = heap.alloc_object(Object::from_properties(map));
+            ObjectOutcome::Acc(acc) => {
+                let (id, heap) = heap.alloc_object(acc.into_object());
                 (Outcome::Normal(Value::Object(id)), heap, fuel)
             }
         },
     )
 }
 
+/// Accumulator for an object-literal's resolved members.  Data and
+/// accessor entries are kept in separate maps mirroring `Object`'s
+/// own storage shape; the final [`Self::into_object`] folds both
+/// halves into a [`Object`].
+#[derive(Clone, Default)]
+struct ObjectAcc {
+    data: BTreeMap<String, Value>,
+    accessors: BTreeMap<String, crate::value::AccessorPair>,
+}
+
+impl ObjectAcc {
+    fn with_data(&self, key: String, value: Value) -> Self {
+        let mut data = self.data.clone();
+        let mut accessors = self.accessors.clone();
+        let _ = accessors.remove(&key);
+        let _ = data.insert(key, value);
+        Self { data, accessors }
+    }
+
+    fn with_get(&self, key: String, get: Value) -> Self {
+        let mut data = self.data.clone();
+        let mut accessors = self.accessors.clone();
+        let _ = data.remove(&key);
+        let updated = accessors
+            .get(&key)
+            .cloned()
+            .unwrap_or_default()
+            .with_get(get);
+        let _ = accessors.insert(key, updated);
+        Self { data, accessors }
+    }
+
+    fn with_set(&self, key: String, set: Value) -> Self {
+        let mut data = self.data.clone();
+        let mut accessors = self.accessors.clone();
+        let _ = data.remove(&key);
+        let updated = accessors
+            .get(&key)
+            .cloned()
+            .unwrap_or_default()
+            .with_set(set);
+        let _ = accessors.insert(key, updated);
+        Self { data, accessors }
+    }
+
+    fn with_spread_data(&self, extension: BTreeMap<String, Value>) -> Self {
+        let merged: BTreeMap<String, Value> = self
+            .data
+            .clone()
+            .into_iter()
+            .chain(extension.into_iter().filter(|(k, _)| k != "length"))
+            .collect();
+        Self {
+            data: merged,
+            accessors: self.accessors.clone(),
+        }
+    }
+
+    fn into_object(self) -> Object {
+        let Self { data, accessors } = self;
+        accessors
+            .into_iter()
+            .fold(Object::from_properties(data), |obj, (key, pair)| {
+                obj.with_accessor(key, pair)
+            })
+    }
+}
+
 enum ObjectOutcome {
-    Map(BTreeMap<String, Value>),
+    Acc(ObjectAcc),
     Throw(Value),
 }
 
 fn collect_object_members(
     properties: &[ObjectMember],
     idx: usize,
-    acc: BTreeMap<String, Value>,
+    acc: ObjectAcc,
     env: &Env,
     heap: Heap,
     fuel: Fuel,
 ) -> Result<(ObjectOutcome, Heap, Fuel), Error> {
     properties.get(idx).map_or_else(
-        || Ok((ObjectOutcome::Map(acc.clone()), heap.clone(), fuel)),
+        || Ok((ObjectOutcome::Acc(acc.clone()), heap.clone(), fuel)),
         |member| {
             eval_one_object_member(member, &acc, env, heap.clone(), fuel).and_then(
                 |(outcome, heap, fuel)| match outcome {
                     ObjectOutcome::Throw(v) => Ok((ObjectOutcome::Throw(v), heap, fuel)),
-                    ObjectOutcome::Map(extended) => {
+                    ObjectOutcome::Acc(extended) => {
                         collect_object_members(properties, idx + 1, extended, env, heap, fuel)
                     }
                 },
@@ -339,7 +407,7 @@ fn collect_object_members(
 
 fn eval_one_object_member(
     member: &ObjectMember,
-    acc: &BTreeMap<String, Value>,
+    acc: &ObjectAcc,
     env: &Env,
     heap: Heap,
     fuel: Fuel,
@@ -348,11 +416,14 @@ fn eval_one_object_member(
         ObjectMember::Property {
             key, value, kind, ..
         } => match kind {
-            ObjectPropertyKind::Init => eval_init_property(key, value, acc, env, heap, fuel),
-            ObjectPropertyKind::Get | ObjectPropertyKind::Set | ObjectPropertyKind::Method => {
-                Err(Error::Unsupported {
-                    feature: "object method/getter/setter members",
-                })
+            ObjectPropertyKind::Init | ObjectPropertyKind::Method => {
+                eval_data_member(key, value, acc, env, heap, fuel)
+            }
+            ObjectPropertyKind::Get => {
+                eval_accessor_member(key, value, acc, AccessorHalf::Get, env, heap, fuel)
+            }
+            ObjectPropertyKind::Set => {
+                eval_accessor_member(key, value, acc, AccessorHalf::Set, env, heap, fuel)
             }
         },
         ObjectMember::Spread { argument } => {
@@ -364,24 +435,56 @@ fn eval_one_object_member(
                             .object(id)
                             .map(|obj| obj.properties().clone())
                             .unwrap_or_default();
-                        let merged: BTreeMap<String, Value> = acc
-                            .clone()
-                            .into_iter()
-                            .chain(extension.into_iter().filter(|(k, _)| k != "length"))
-                            .collect();
-                        (ObjectOutcome::Map(merged), heap, fuel)
+                        (
+                            ObjectOutcome::Acc(acc.with_spread_data(extension)),
+                            heap,
+                            fuel,
+                        )
                     }
-                    _other => (ObjectOutcome::Map(acc.clone()), heap, fuel),
+                    Value::Undefined
+                    | Value::Null
+                    | Value::Boolean(_)
+                    | Value::Number(_)
+                    | Value::String(_)
+                    | Value::Function(_)
+                    | Value::Native(_) => (ObjectOutcome::Acc(acc.clone()), heap, fuel),
                 },
             })
         }
     }
 }
 
-fn eval_init_property(
+#[derive(Clone, Copy)]
+enum AccessorHalf {
+    Get,
+    Set,
+}
+
+fn eval_data_member(
     key: &PropertyKey,
     value: &Expression,
-    acc: &BTreeMap<String, Value>,
+    acc: &ObjectAcc,
+    env: &Env,
+    heap: Heap,
+    fuel: Fuel,
+) -> Result<(ObjectOutcome, Heap, Fuel), Error> {
+    eval_property_key(key, env, heap, fuel).and_then(|(key_out, heap, fuel)| match key_out {
+        Outcome::Throw(v) => Ok((ObjectOutcome::Throw(v), heap, fuel)),
+        Outcome::Normal(key_value) => {
+            let key_str = to_property_key(&key_value, &heap);
+            eval(value, env, heap, fuel).map(|(val_out, heap, fuel)| match val_out {
+                Outcome::Throw(v) => (ObjectOutcome::Throw(v), heap, fuel),
+                Outcome::Normal(v) => (ObjectOutcome::Acc(acc.with_data(key_str, v)), heap, fuel),
+            })
+        }
+    })
+}
+
+fn eval_accessor_member(
+    key: &PropertyKey,
+    value: &Expression,
+    acc: &ObjectAcc,
+    half: AccessorHalf,
     env: &Env,
     heap: Heap,
     fuel: Fuel,
@@ -393,9 +496,11 @@ fn eval_init_property(
             eval(value, env, heap, fuel).map(|(val_out, heap, fuel)| match val_out {
                 Outcome::Throw(v) => (ObjectOutcome::Throw(v), heap, fuel),
                 Outcome::Normal(v) => {
-                    let mut next = acc.clone();
-                    let _ = next.insert(key_str, v);
-                    (ObjectOutcome::Map(next), heap, fuel)
+                    let extended = match half {
+                        AccessorHalf::Get => acc.with_get(key_str, v),
+                        AccessorHalf::Set => acc.with_set(key_str, v),
+                    };
+                    (ObjectOutcome::Acc(extended), heap, fuel)
                 }
             })
         }
@@ -439,12 +544,10 @@ fn resolve_member(
     fuel: Fuel,
 ) -> EvalResult {
     match property {
-        MemberProperty::Identifier(id) => {
-            Ok((access_property(object, id.as_str(), &heap), heap, fuel))
-        }
+        MemberProperty::Identifier(id) => access_property(object, id.as_str(), heap, fuel),
         MemberProperty::Computed(expr) => step(eval(expr, env, heap, fuel), |key, heap, fuel| {
             let key_str = to_property_key(&key, &heap);
-            Ok((access_property(object, &key_str, &heap), heap, fuel))
+            access_property(object, &key_str, heap, fuel)
         }),
         MemberProperty::Private(_) => Err(Error::Unsupported {
             feature: "private member access",
@@ -452,19 +555,50 @@ fn resolve_member(
     }
 }
 
-fn access_property(object: &Value, key: &str, heap: &Heap) -> Outcome {
+fn access_property(object: &Value, key: &str, heap: Heap, fuel: Fuel) -> EvalResult {
     match object {
-        Value::Object(id) => Outcome::Normal(
-            heap.object(*id)
-                .and_then(|obj| obj.get(key))
-                .cloned()
-                .unwrap_or(Value::Undefined),
-        ),
-        Value::String(s) => string_member(s, key),
-        _other => Outcome::Throw(type_error(&format!(
-            "cannot access property {key:?} of non-object"
-        ))),
+        Value::Object(id) => {
+            // v0.3 dispatches to a getter when `key` resolves to an
+            // accessor property: the getter is invoked with
+            // `this = object` and `args = []`, and its result
+            // becomes the property read's value.  A getter-less
+            // accessor reads as `undefined` per ECMAScript spec.
+            let resolved = heap.object(*id).map(|obj| {
+                obj.get(key).cloned().map_or_else(
+                    || PropertyLookup::Accessor(obj.accessor(key).cloned()),
+                    PropertyLookup::Data,
+                )
+            });
+            match resolved {
+                Some(PropertyLookup::Data(v)) => Ok((Outcome::Normal(v), heap, fuel)),
+                Some(PropertyLookup::Accessor(Some(pair))) => match pair.get_fn().cloned() {
+                    Some(getter) => call_function(&getter, object, Vec::new(), heap, fuel),
+                    None => Ok((Outcome::Normal(Value::Undefined), heap, fuel)),
+                },
+                Some(PropertyLookup::Accessor(None)) | None => {
+                    Ok((Outcome::Normal(Value::Undefined), heap, fuel))
+                }
+            }
+        }
+        Value::String(s) => Ok((string_member(s, key), heap, fuel)),
+        Value::Undefined
+        | Value::Null
+        | Value::Boolean(_)
+        | Value::Number(_)
+        | Value::Function(_)
+        | Value::Native(_) => Ok((
+            Outcome::Throw(type_error(&format!(
+                "cannot access property {key:?} of non-object"
+            ))),
+            heap,
+            fuel,
+        )),
     }
+}
+
+enum PropertyLookup {
+    Data(Value),
+    Accessor(Option<crate::value::AccessorPair>),
 }
 
 fn string_member(s: &str, key: &str) -> Outcome {
@@ -856,32 +990,65 @@ fn store_object_member(
     fuel: Fuel,
 ) -> EvalResult {
     match object {
-        Value::Object(id) => {
-            if let Some(obj) = heap.object(*id).cloned() {
-                let updated = obj.with(key.to_owned(), value.clone());
-                heap.store_object(*id, updated).map_or_else(
-                    |err_heap| {
-                        Ok((
-                            Outcome::Throw(type_error("object store failed")),
-                            err_heap,
-                            fuel,
-                        ))
-                    },
-                    |new_heap| Ok((Outcome::Normal(value), new_heap, fuel)),
-                )
-            } else {
-                Ok((
-                    Outcome::Throw(type_error("object missing from heap")),
-                    heap,
-                    fuel,
-                ))
-            }
-        }
-        _other => Ok((
+        Value::Object(id) => match heap.object(*id).cloned() {
+            Some(obj) => store_property_or_invoke_setter(*id, &obj, object, key, value, heap, fuel),
+            None => Ok((
+                Outcome::Throw(type_error("object missing from heap")),
+                heap,
+                fuel,
+            )),
+        },
+        Value::Undefined
+        | Value::Null
+        | Value::Boolean(_)
+        | Value::Number(_)
+        | Value::String(_)
+        | Value::Function(_)
+        | Value::Native(_) => Ok((
             Outcome::Throw(type_error("cannot set property on non-object")),
             heap,
             fuel,
         )),
+    }
+}
+
+fn store_property_or_invoke_setter(
+    object_id: crate::value::ObjectId,
+    obj: &Object,
+    object: &Value,
+    key: &str,
+    value: Value,
+    heap: Heap,
+    fuel: Fuel,
+) -> EvalResult {
+    // v0.3 dispatches `obj.key = v` to a setter when `key` is an
+    // accessor property: the setter is invoked with `this = object`
+    // and `args = [v]`, and the assignment expression evaluates to
+    // `v` regardless of the setter's own return value (ECMAScript
+    // spec).  A setter-less accessor silently discards the
+    // assignment in non-strict mode (we don't implement strict
+    // mode in v0.3, so silent is the right default).
+    match obj.accessor(key).and_then(|pair| pair.set_fn().cloned()) {
+        Some(setter) => call_function(&setter, object, vec![value.clone()], heap, fuel).map(
+            |(outcome, heap, fuel)| match outcome {
+                Outcome::Normal(_) => (Outcome::Normal(value), heap, fuel),
+                Outcome::Throw(v) => (Outcome::Throw(v), heap, fuel),
+            },
+        ),
+        None if obj.accessor(key).is_some() => Ok((Outcome::Normal(value), heap, fuel)),
+        None => {
+            let updated = obj.with(key.to_owned(), value.clone());
+            heap.store_object(object_id, updated).map_or_else(
+                |err_heap| {
+                    Ok((
+                        Outcome::Throw(type_error("object store failed")),
+                        err_heap,
+                        fuel,
+                    ))
+                },
+                |new_heap| Ok((Outcome::Normal(value), new_heap, fuel)),
+            )
+        }
     }
 }
 
