@@ -45,6 +45,7 @@ pub mod fuel;
 pub mod heap;
 pub mod operator;
 pub mod outcome;
+pub mod promise;
 pub mod statement;
 pub mod value;
 
@@ -55,7 +56,8 @@ use ecma_syntax_cat::program::{Program, ProgramKind};
 
 pub use env::Binding;
 pub use error::Error;
-pub use value::{AccessorPair, Cell, NativeFn, Value};
+pub use promise::{PromiseHandler, PromiseState};
+pub use value::{AccessorPair, Cell, NativeFn, PromiseId, Value};
 
 use crate::completion::Completion;
 use crate::env::Env;

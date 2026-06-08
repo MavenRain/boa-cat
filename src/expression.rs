@@ -447,7 +447,8 @@ fn eval_one_object_member(
                     | Value::Number(_)
                     | Value::String(_)
                     | Value::Function(_)
-                    | Value::Native(_) => (ObjectOutcome::Acc(acc.clone()), heap, fuel),
+                    | Value::Native(_)
+                    | Value::Promise(_) => (ObjectOutcome::Acc(acc.clone()), heap, fuel),
                 },
             })
         }
@@ -581,6 +582,7 @@ fn access_property(object: &Value, key: &str, heap: Heap, fuel: Fuel) -> EvalRes
             }
         }
         Value::String(s) => Ok((string_member(s, key), heap, fuel)),
+        Value::Promise(_) => Ok((promise_member(key), heap, fuel)),
         Value::Undefined
         | Value::Null
         | Value::Boolean(_)
@@ -593,6 +595,17 @@ fn access_property(object: &Value, key: &str, heap: Heap, fuel: Fuel) -> EvalRes
             heap,
             fuel,
         )),
+    }
+}
+
+/// v0.4: surface `.then` / `.catch` as native callables when JS
+/// accesses them on a [`Value::Promise`].  Other keys resolve to
+/// `undefined` per spec (Promises don't expose data properties).
+fn promise_member(key: &str) -> Outcome {
+    match key {
+        "then" => Outcome::Normal(Value::Native(crate::promise::then_impl)),
+        "catch" => Outcome::Normal(Value::Native(crate::promise::catch_impl)),
+        _other => Outcome::Normal(Value::Undefined),
     }
 }
 
@@ -706,7 +719,7 @@ fn collect_arguments(
     )
 }
 
-fn call_function(
+pub(crate) fn call_function(
     callee: &Value,
     this_value: &Value,
     args: Vec<Value>,
@@ -730,7 +743,8 @@ fn call_function(
         | Value::Boolean(_)
         | Value::Number(_)
         | Value::String(_)
-        | Value::Object(_) => Ok((
+        | Value::Object(_)
+        | Value::Promise(_) => Ok((
             Outcome::Throw(type_error("called value is not a function")),
             heap,
             fuel,
@@ -1004,7 +1018,8 @@ fn store_object_member(
         | Value::Number(_)
         | Value::String(_)
         | Value::Function(_)
-        | Value::Native(_) => Ok((
+        | Value::Native(_)
+        | Value::Promise(_) => Ok((
             Outcome::Throw(type_error("cannot set property on non-object")),
             heap,
             fuel,

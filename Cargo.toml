@@ -1,8 +1,8 @@
 [package]
 name = "boa-cat"
-version = "0.3.1"
+version = "0.4.0"
 edition = "2024"
-description = "Tree-walking ECMAScript interpreter built on ecma-syntax-cat.  v0.3.0 added accessor-property support at the engine level (`Object::with_accessor`, getter/setter dispatch on read/write).  v0.3.1 picks up ecma-parse-cat 0.2 so the same dispatch path now also fires for accessor / shorthand-method object-literal syntax (`{ get x() {} }` / `{ set x(v) {} }` / `{ foo() {} }`) in user-provided JS source -- the engine already handled those AST variants in 0.3.0, only the parser was holding it back."
+description = "Tree-walking ECMAScript interpreter built on ecma-syntax-cat.  v0.4.0 opens the async track (chunk 1 of 5-7): adds a `Value::Promise(PromiseId)` variant + heap-stored `PromiseState::{Pending, Resolved, Rejected}` + synchronous `.then` / `.catch` dispatch with chained-promise return values.  Embedders build promises from Rust via `Heap::alloc_promise(state)` -- a JS-side `Promise.resolve` / `reject` / `all` / `race` constructor surface lands in ecma-runtime-cat 0.3 once boa-cat 0.5 ships `await` and the microtask driver."
 license = "MIT OR Apache-2.0"
 keywords = ["ecmascript", "javascript", "interpreter", "boa", "type-driven"]
 categories = ["development-tools", "compilers"]

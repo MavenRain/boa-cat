@@ -133,7 +133,7 @@ fn type_of(value: &Value) -> String {
         Value::Boolean(_) => "boolean",
         Value::Number(_) => "number",
         Value::String(_) => "string",
-        Value::Object(_) => "object",
+        Value::Object(_) | Value::Promise(_) => "object",
         Value::Function(_) | Value::Native(_) => "function",
     }
     .to_owned()

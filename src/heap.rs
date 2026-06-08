@@ -2,7 +2,8 @@
 
 use std::collections::BTreeMap;
 
-use crate::value::{Cell, CellId, FunctionDef, FunctionId, Object, ObjectId, Value};
+use crate::promise::PromiseState;
+use crate::value::{Cell, CellId, FunctionDef, FunctionId, Object, ObjectId, PromiseId, Value};
 
 /// A persistent heap.  Operations consume `self` and return the updated
 /// heap, matching the state-threading style of the engine: callers always
@@ -12,9 +13,11 @@ pub struct Heap {
     objects: BTreeMap<ObjectId, Object>,
     functions: BTreeMap<FunctionId, FunctionDef>,
     cells: BTreeMap<CellId, Cell>,
+    promises: BTreeMap<PromiseId, PromiseState>,
     next_object: u64,
     next_function: u64,
     next_cell: u64,
+    next_promise: u64,
 }
 
 impl Heap {
@@ -34,9 +37,11 @@ impl Heap {
             objects: next_objects,
             functions: self.functions,
             cells: self.cells,
+            promises: self.promises,
             next_object: self.next_object + 1,
             next_function: self.next_function,
             next_cell: self.next_cell,
+            next_promise: self.next_promise,
         };
         (id, next)
     }
@@ -51,9 +56,11 @@ impl Heap {
             objects: self.objects,
             functions: next_functions,
             cells: self.cells,
+            promises: self.promises,
             next_object: self.next_object,
             next_function: self.next_function + 1,
             next_cell: self.next_cell,
+            next_promise: self.next_promise,
         };
         (id, next)
     }
@@ -69,9 +76,31 @@ impl Heap {
             objects: self.objects,
             functions: self.functions,
             cells: next_cells,
+            promises: self.promises,
             next_object: self.next_object,
             next_function: self.next_function,
             next_cell: self.next_cell + 1,
+            next_promise: self.next_promise,
+        };
+        (id, next)
+    }
+
+    /// Allocate `state` as a fresh promise, returning its id and
+    /// the resulting heap (v0.4 async track).
+    #[must_use]
+    pub fn alloc_promise(self, state: PromiseState) -> (PromiseId, Self) {
+        let id = PromiseId::new(self.next_promise);
+        let mut next_promises = self.promises;
+        let _ = next_promises.insert(id, state);
+        let next = Self {
+            objects: self.objects,
+            functions: self.functions,
+            cells: self.cells,
+            promises: next_promises,
+            next_object: self.next_object,
+            next_function: self.next_function,
+            next_cell: self.next_cell,
+            next_promise: self.next_promise + 1,
         };
         (id, next)
     }
@@ -82,6 +111,7 @@ impl Heap {
     /// # Errors
     ///
     /// Returns the original heap as `Err(self)` when `id` is not present.
+    #[allow(clippy::result_large_err)] // Err carries Self by design (state-threading pattern)
     pub fn store_object(self, id: ObjectId, object: Object) -> Result<Self, Self> {
         if self.objects.contains_key(&id) {
             let mut next_objects = self.objects;
@@ -90,9 +120,37 @@ impl Heap {
                 objects: next_objects,
                 functions: self.functions,
                 cells: self.cells,
+                promises: self.promises,
                 next_object: self.next_object,
                 next_function: self.next_function,
                 next_cell: self.next_cell,
+                next_promise: self.next_promise,
+            })
+        } else {
+            Err(self)
+        }
+    }
+
+    /// Replace the promise at `id` with `state`.  Returns the
+    /// original heap as `Err(self)` if `id` is unknown.
+    ///
+    /// # Errors
+    ///
+    /// Returns the original heap as `Err(self)` when `id` is not present.
+    #[allow(clippy::result_large_err)] // Err carries Self by design (state-threading pattern)
+    pub fn store_promise(self, id: PromiseId, state: PromiseState) -> Result<Self, Self> {
+        if self.promises.contains_key(&id) {
+            let mut next_promises = self.promises;
+            let _ = next_promises.insert(id, state);
+            Ok(Self {
+                objects: self.objects,
+                functions: self.functions,
+                cells: self.cells,
+                promises: next_promises,
+                next_object: self.next_object,
+                next_function: self.next_function,
+                next_cell: self.next_cell,
+                next_promise: self.next_promise,
             })
         } else {
             Err(self)
@@ -107,6 +165,7 @@ impl Heap {
     ///
     /// Returns the original heap as `Err(self)` when `id` is missing or
     /// the cell is immutable (`const`).
+    #[allow(clippy::result_large_err)] // Err carries Self by design (state-threading pattern)
     pub fn store_cell(self, id: CellId, value: Value) -> Result<Self, Self> {
         let cloned = self.cells.get(&id).cloned();
         if let Some(existing) = cloned {
@@ -117,9 +176,11 @@ impl Heap {
                     objects: self.objects,
                     functions: self.functions,
                     cells: next_cells,
+                    promises: self.promises,
                     next_object: self.next_object,
                     next_function: self.next_function,
                     next_cell: self.next_cell,
+                    next_promise: self.next_promise,
                 })
             } else {
                 Err(self)
@@ -145,6 +206,18 @@ impl Heap {
     #[must_use]
     pub fn cell(&self, id: CellId) -> Option<&Cell> {
         self.cells.get(&id)
+    }
+
+    /// Look up the promise at `id` (v0.4 async track).
+    #[must_use]
+    pub fn promise(&self, id: PromiseId) -> Option<&PromiseState> {
+        self.promises.get(&id)
+    }
+
+    /// Number of promises in the heap.
+    #[must_use]
+    pub fn promise_count(&self) -> usize {
+        self.promises.len()
     }
 
     /// Number of objects in the heap.

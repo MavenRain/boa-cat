@@ -34,6 +34,31 @@ impl std::fmt::Display for ObjectId {
     }
 }
 
+/// A heap-allocated promise's identifier (v0.4 async track).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PromiseId(u64);
+
+impl PromiseId {
+    /// Build a `PromiseId` from a raw integer.  Internal use; the
+    /// heap is the only legitimate source of `PromiseId`s.
+    #[must_use]
+    pub(crate) fn new(id: u64) -> Self {
+        Self(id)
+    }
+
+    /// The raw underlying id.
+    #[must_use]
+    pub fn raw(&self) -> u64 {
+        self.0
+    }
+}
+
+impl std::fmt::Display for PromiseId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "promise#{}", self.0)
+    }
+}
+
 /// A heap-allocated function's identifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FunctionId(u64);
@@ -144,6 +169,8 @@ pub enum Value {
     /// their arguments, a `this` binding, the current heap, and the fuel
     /// budget, and return the standard expression-evaluation result.
     Native(NativeFn),
+    /// A handle to a heap-allocated promise (v0.4).
+    Promise(PromiseId),
 }
 
 /// Signature of a native (Rust-implemented) callable.
@@ -172,6 +199,7 @@ impl std::fmt::Display for Value {
             Self::Object(id) => write!(f, "{id}"),
             Self::Function(id) => write!(f, "{id}"),
             Self::Native(_) => f.write_str("function [native code]"),
+            Self::Promise(_) => f.write_str("[object Promise]"),
         }
     }
 }
