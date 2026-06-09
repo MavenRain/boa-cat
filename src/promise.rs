@@ -1,28 +1,33 @@
-//! Promise values and synchronous `.then` / `.catch` dispatch
-//! (boa-cat 0.4 -- chunk 1 of the async track).
+//! Promise values, synchronous `.then` / `.catch` dispatch (v0.4),
+//! and the microtask driver (v0.5).
 //!
-//! v0.4 ships the type infrastructure and the resolved/rejected
-//! dispatch paths:
+//! Dispatch surface:
 //!
 //! - [`PromiseState::Resolved(v)`] -- `.then(cb)` invokes `cb(v)`
 //!   immediately and returns a new `Resolved` promise wrapping
-//!   `cb`'s result; `.catch(cb)` passes through unchanged.
+//!   `cb`'s result; the second `.then` arg (and `.catch`) passes
+//!   through unchanged.
 //! - [`PromiseState::Rejected(v)`] -- `.then(cb)` passes through;
-//!   `.catch(cb)` invokes `cb(v)` and returns `Resolved(cb_result)`
-//!   (matching real Promise semantics where a handled rejection
-//!   recovers).
-//! - [`PromiseState::Pending`] -- handlers are queued for the v0.5
-//!   microtask driver.  This chunk reserves the variant but the
-//!   queued handlers don't run yet (a Pending `.then` returns a
-//!   Pending child promise).
+//!   `.then(null, cb)` (and `.catch(cb)`) invokes `cb(v)` and
+//!   returns `Resolved(cb_result)` (matching real Promise
+//!   semantics where a handled rejection recovers).
+//! - [`PromiseState::Pending`] -- handlers queue on `.then`; calling
+//!   [`resolve`] / [`reject`] (or the JS-side `__resolve_promise` /
+//!   `__reject_promise` hooks installed via [`install_test_hooks`])
+//!   transitions the promise and drains the queue, settling each
+//!   chained child by invoking its callback against the resolved
+//!   value and recursing.  Once settled a promise is immutable;
+//!   later [`resolve`] / [`reject`] calls on the same id are no-ops
+//!   per Promise A+ spec.
 //!
-//! Without `await` (chunk 3) or `Promise.resolve` / `reject` /
-//! `all` / `race` built-ins (chunk 5), Pending promises stay
-//! Pending and the .then-chain only runs when the caller built the
-//! source promise as Resolved/Rejected (typically from Rust via
-//! [`Heap::alloc_promise`]).  The chunk-1 surface is enough to
-//! pin down the value type + chained-resolution semantics; later
-//! chunks layer the rest.
+//! Known v0.5 limitation: thenable adoption.  When a `.then`
+//! callback returns a Promise, real engines adopt that Promise's
+//! eventual state into the chained promise.  This implementation
+//! wraps the returned Promise in a new `Resolved(Value::Promise(_))`,
+//! so chaining through `.then(_ => somePromise).then(cb)` gives
+//! `cb` the Promise value rather than its eventual contents.  Lands
+//! when ecma-runtime-cat 0.3 introduces `Promise.resolve(...)` and
+//! the spec-faithful adoption path can be tested end-to-end.
 
 use crate::fuel::Fuel;
 use crate::heap::Heap;
@@ -130,6 +135,168 @@ pub fn catch_impl(args: Vec<Value>, this: Value, heap: Heap, fuel: Fuel) -> Eval
             fuel,
         )),
     }
+}
+
+/// Transition the promise at `promise_id` from `Pending` to
+/// `Resolved(value)` and drain its queued handlers (v0.5).  Each
+/// queued [`PromiseHandler`] fires its `on_resolve` callback (or
+/// passes the value through unchanged when no callback is set),
+/// and the result settles the handler's `chained` child -- the
+/// drain is fully recursive, so chained `.then(...).then(...)`
+/// graphs all settle within one [`resolve`] call.  Promises that
+/// are already settled (Resolved or Rejected) are no-ops per
+/// Promise A+ spec.
+///
+/// # Errors
+///
+/// Propagates errors from any handler callback.  Successful no-ops
+/// (already-settled or unknown id) yield
+/// `Outcome::Normal(Value::Undefined)`.
+pub fn resolve(promise_id: PromiseId, value: Value, heap: Heap, fuel: Fuel) -> EvalResult {
+    settle_pending(
+        promise_id, value, /* was_resolved = */ true, heap, fuel,
+    )
+}
+
+/// Transition the promise at `promise_id` from `Pending` to
+/// `Rejected(value)` and drain its queued handlers, firing each
+/// `on_reject` callback (or passing the value through as a fresh
+/// rejection when no callback is set).
+///
+/// # Errors
+///
+/// Propagates errors from any handler callback.
+pub fn reject(promise_id: PromiseId, value: Value, heap: Heap, fuel: Fuel) -> EvalResult {
+    settle_pending(
+        promise_id, value, /* was_resolved = */ false, heap, fuel,
+    )
+}
+
+fn settle_pending(
+    promise_id: PromiseId,
+    value: Value,
+    was_resolved: bool,
+    heap: Heap,
+    fuel: Fuel,
+) -> EvalResult {
+    match heap.promise(promise_id).cloned() {
+        Some(PromiseState::Pending(handlers)) => {
+            let new_state = if was_resolved {
+                PromiseState::Resolved(value.clone())
+            } else {
+                PromiseState::Rejected(value.clone())
+            };
+            let heap = heap
+                .store_promise(promise_id, new_state)
+                .unwrap_or_else(|h| h);
+            drain_handlers(handlers, value, was_resolved, heap, fuel)
+        }
+        Some(PromiseState::Resolved(_) | PromiseState::Rejected(_)) | None => {
+            // Already settled (or missing): no-op per Promise A+.
+            Ok((Outcome::Normal(Value::Undefined), heap, fuel))
+        }
+    }
+}
+
+fn drain_handlers(
+    handlers: Vec<PromiseHandler>,
+    value: Value,
+    was_resolved: bool,
+    heap: Heap,
+    fuel: Fuel,
+) -> EvalResult {
+    handlers.into_iter().try_fold(
+        (Outcome::Normal(Value::Undefined), heap, fuel),
+        |(_, heap, fuel), handler| {
+            fire_one_handler(handler, value.clone(), was_resolved, heap, fuel)
+        },
+    )
+}
+
+fn fire_one_handler(
+    handler: PromiseHandler,
+    value: Value,
+    was_resolved: bool,
+    heap: Heap,
+    fuel: Fuel,
+) -> EvalResult {
+    let callback = if was_resolved {
+        handler.on_resolve().cloned()
+    } else {
+        handler.on_reject().cloned()
+    };
+    let chained = handler.chained();
+    match callback {
+        Some(cb) if is_callable(&cb) => {
+            crate::expression::call_function(&cb, &Value::Undefined, vec![value], heap, fuel)
+                .and_then(|(outcome, heap, fuel)| match outcome {
+                    Outcome::Normal(result) => resolve(chained, result, heap, fuel),
+                    Outcome::Throw(thrown) => reject(chained, thrown, heap, fuel),
+                })
+        }
+        Some(_) | None => {
+            // No callback (or non-callable): pass the value through
+            // unchanged, preserving the resolved-vs-rejected
+            // disposition.
+            if was_resolved {
+                resolve(chained, value, heap, fuel)
+            } else {
+                reject(chained, value, heap, fuel)
+            }
+        }
+    }
+}
+
+/// `__resolve_promise(promise, value)` `NativeFn` for tests and
+/// embedders that don't yet have a JS-side `Promise.resolve`.
+/// Returns `undefined`.
+///
+/// # Errors
+///
+/// Propagates errors from the recursive handler drain.
+#[allow(clippy::needless_pass_by_value)]
+pub fn resolve_test_hook(args: Vec<Value>, _this: Value, heap: Heap, fuel: Fuel) -> EvalResult {
+    let promise_id = args.first().and_then(promise_id_of);
+    let value = args.get(1).cloned().unwrap_or(Value::Undefined);
+    match promise_id {
+        Some(id) => resolve(id, value, heap, fuel),
+        None => Ok((Outcome::Normal(Value::Undefined), heap, fuel)),
+    }
+}
+
+/// `__reject_promise(promise, value)` `NativeFn` for tests and
+/// embedders.
+///
+/// # Errors
+///
+/// Propagates errors from the recursive handler drain.
+#[allow(clippy::needless_pass_by_value)]
+pub fn reject_test_hook(args: Vec<Value>, _this: Value, heap: Heap, fuel: Fuel) -> EvalResult {
+    let promise_id = args.first().and_then(promise_id_of);
+    let value = args.get(1).cloned().unwrap_or(Value::Undefined);
+    match promise_id {
+        Some(id) => reject(id, value, heap, fuel),
+        None => Ok((Outcome::Normal(Value::Undefined), heap, fuel)),
+    }
+}
+
+/// Install `__resolve_promise` and `__reject_promise` as `const`
+/// cells in `env`.  Test code and embedders that want to drive
+/// pending promises from JS call this once on the initial env.
+#[must_use]
+pub fn install_test_hooks(env: crate::env::Env, heap: Heap) -> (crate::env::Env, Heap) {
+    let (resolve_cell, heap) = heap.alloc_cell(crate::value::Cell::new(
+        Value::Native(resolve_test_hook),
+        false,
+    ));
+    let (reject_cell, heap) = heap.alloc_cell(crate::value::Cell::new(
+        Value::Native(reject_test_hook),
+        false,
+    ));
+    let env = env
+        .extend_cell("__resolve_promise", resolve_cell)
+        .extend_cell("__reject_promise", reject_cell);
+    (env, heap)
 }
 
 fn promise_id_of(value: &Value) -> Option<PromiseId> {

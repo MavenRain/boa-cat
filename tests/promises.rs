@@ -199,3 +199,143 @@ fn promise_handler_carries_chained_id() -> Result<(), Error> {
             rendered: "PromiseHandler fields did not round-trip".to_owned(),
         })
 }
+
+mod microtask_driver {
+    //! v0.5 microtask driver tests: queued handlers fire when the
+    //! source promise transitions Pending -> Resolved / Rejected
+    //! via `__resolve_promise` / `__reject_promise`.
+
+    use super::{install_promise, run_eval};
+    use boa_cat::env::Env;
+    use boa_cat::heap::Heap;
+    use boa_cat::value::Value;
+    use boa_cat::{Error, PromiseState};
+
+    fn install_promise_with_hooks(state: PromiseState) -> (Env, Heap) {
+        let (env, heap) = install_promise(&Env::empty(), Heap::new(), state);
+        boa_cat::promise::install_test_hooks(env, heap)
+    }
+
+    #[test]
+    fn resolve_drains_queued_then_handler() -> Result<(), Error> {
+        let (env, heap) = install_promise_with_hooks(PromiseState::Pending(Vec::new()));
+        // Queue a handler; then resolve from JS; verify the handler
+        // fired and observed the resolution value.
+        let value = run_eval(
+            "let captured = -1;
+            p.then(v => { captured = v; });
+            __resolve_promise(p, 42);
+            captured",
+            env,
+            heap,
+        )?;
+        matches!(value, Value::Number(n) if (n - 42.0).abs() < 1e-9)
+            .then_some(())
+            .ok_or(Error::UncaughtException {
+                rendered: format!("expected 42 captured after resolve, got {value:?}"),
+            })
+    }
+
+    #[test]
+    fn reject_drains_queued_then_handler_second_arg() -> Result<(), Error> {
+        let (env, heap) = install_promise_with_hooks(PromiseState::Pending(Vec::new()));
+        let value = run_eval(
+            "let captured = '';
+            p.then(null, e => { captured = e; });
+            __reject_promise(p, 'boom');
+            captured",
+            env,
+            heap,
+        )?;
+        matches!(value, Value::String(ref s) if s == "boom")
+            .then_some(())
+            .ok_or(Error::UncaughtException {
+                rendered: format!("expected 'boom' captured after reject, got {value:?}"),
+            })
+    }
+
+    #[test]
+    fn resolve_settles_chained_grandchild() -> Result<(), Error> {
+        // `.then(...).then(...)` builds a 3-promise chain rooted at
+        // p.  Resolving p must cascade through the chain so the
+        // grandchild's callback fires too.
+        let (env, heap) = install_promise_with_hooks(PromiseState::Pending(Vec::new()));
+        let value = run_eval(
+            "let captured = -1;
+            p.then(v => v * 2).then(v => { captured = v + 1; });
+            __resolve_promise(p, 5);
+            captured",
+            env,
+            heap,
+        )?;
+        matches!(value, Value::Number(n) if (n - 11.0).abs() < 1e-9)
+            .then_some(())
+            .ok_or(Error::UncaughtException {
+                rendered: format!("expected 11 from (5*2)+1, got {value:?}"),
+            })
+    }
+
+    #[test]
+    fn second_resolve_call_is_a_no_op() -> Result<(), Error> {
+        let (env, heap) = install_promise_with_hooks(PromiseState::Pending(Vec::new()));
+        // Promise A+: only the first settle wins; the second call's
+        // value is discarded.
+        let value = run_eval(
+            "let captured = -1;
+            p.then(v => { captured = v; });
+            __resolve_promise(p, 7);
+            __resolve_promise(p, 999);
+            captured",
+            env,
+            heap,
+        )?;
+        matches!(value, Value::Number(n) if (n - 7.0).abs() < 1e-9)
+            .then_some(())
+            .ok_or(Error::UncaughtException {
+                rendered: format!("expected 7 (first resolve wins), got {value:?}"),
+            })
+    }
+
+    #[test]
+    fn callback_throw_becomes_chained_rejection() -> Result<(), Error> {
+        // When an on_resolve callback throws, the chained promise
+        // adopts that throw as a Rejected state.  Use a
+        // `.then(null, cb)` on the child to recover.
+        let (env, heap) = install_promise_with_hooks(PromiseState::Pending(Vec::new()));
+        let value = run_eval(
+            "let recovered = '';
+            p.then(v => { throw 'oops:' + v; }).then(null, e => { recovered = e; });
+            __resolve_promise(p, 9);
+            recovered",
+            env,
+            heap,
+        )?;
+        matches!(value, Value::String(ref s) if s == "oops:9")
+            .then_some(())
+            .ok_or(Error::UncaughtException {
+                rendered: format!("expected 'oops:9' recovered, got {value:?}"),
+            })
+    }
+
+    #[test]
+    fn multiple_then_handlers_on_one_pending_all_fire() -> Result<(), Error> {
+        let (env, heap) = install_promise_with_hooks(PromiseState::Pending(Vec::new()));
+        // Two `.then` calls on the same Pending p queue two
+        // handlers; the resolve fans out to both.
+        let value = run_eval(
+            "let a = -1;
+            let b = -1;
+            p.then(v => { a = v; });
+            p.then(v => { b = v + 100; });
+            __resolve_promise(p, 5);
+            a + b",
+            env,
+            heap,
+        )?;
+        matches!(value, Value::Number(n) if (n - 110.0).abs() < 1e-9)
+            .then_some(())
+            .ok_or(Error::UncaughtException {
+                rendered: format!("expected 5 + 105 = 110, got {value:?}"),
+            })
+    }
+}
