@@ -497,6 +497,7 @@ fn eval_function_declaration(func: &Function, env: &Env, heap: Heap, fuel: Fuel)
         FunctionBody::Statements(func.body().to_vec()),
         new_env.clone(),
         false,
+        func.is_async(),
     );
     let (fn_id, heap) = heap.alloc_function(def);
     heap.store_cell(cell_id, Value::Function(fn_id))

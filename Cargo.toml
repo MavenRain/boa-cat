@@ -1,8 +1,8 @@
 [package]
 name = "boa-cat"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
-description = "Tree-walking ECMAScript interpreter built on ecma-syntax-cat.  v0.5.0 adds the microtask driver (async track chunk 2 of 5-7): `promise::resolve(id, value, heap, fuel)` / `reject(...)` transition a Pending promise and recursively drain its queued `.then` / `.catch` handlers, settling each chained child via its callback (callback throws become Rejected; missing callbacks pass the value through).  Test hooks `__resolve_promise(p, v)` / `__reject_promise(p, v)` are installed via `promise::install_test_hooks(env, heap)` so the driver is exercisable from JS ahead of the `Promise.resolve` / `await` surface in chunks 3-4."
+description = "Tree-walking ECMAScript interpreter built on ecma-syntax-cat.  v0.6.0 adds `await` evaluator dispatch + async function call wrapping (async track chunk 3 of 5-7): `await Resolved(v)` -> `v`, `await Rejected(v)` -> throw `v`, `await Pending` -> TypeError (no continuation in the synchronous tree-walking model), `await non_promise` -> pass through.  Calling an async function (`FunctionDef::is_async()` flag, threaded from `Function::is_async()` / `ArrowFunction::is_async()`) wraps the body's normal completion in a `Resolved` promise and its throw completion in a `Rejected` promise."
 license = "MIT OR Apache-2.0"
 keywords = ["ecmascript", "javascript", "interpreter", "boa", "type-driven"]
 categories = ["development-tools", "compilers"]

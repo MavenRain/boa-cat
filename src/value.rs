@@ -354,6 +354,7 @@ pub struct FunctionDef {
     body: FunctionBody,
     captured_env: Env,
     is_arrow: bool,
+    is_async: bool,
 }
 
 impl FunctionDef {
@@ -365,6 +366,7 @@ impl FunctionDef {
         body: FunctionBody,
         captured_env: Env,
         is_arrow: bool,
+        is_async: bool,
     ) -> Self {
         Self {
             name,
@@ -372,6 +374,7 @@ impl FunctionDef {
             body,
             captured_env,
             is_arrow,
+            is_async,
         }
     }
 
@@ -403,6 +406,15 @@ impl FunctionDef {
     #[must_use]
     pub fn is_arrow(&self) -> bool {
         self.is_arrow
+    }
+
+    /// Whether the function is declared `async` (v0.6).  Async
+    /// functions wrap their body's normal completion in a
+    /// `Resolved` promise and their throw completion in a
+    /// `Rejected` promise when called via [`crate::expression::call_function`].
+    #[must_use]
+    pub fn is_async(&self) -> bool {
+        self.is_async
     }
 }
 

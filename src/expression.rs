@@ -90,7 +90,7 @@ pub fn eval(expr: &Expression, env: &Env, heap: Heap, fuel: Fuel) -> EvalResult 
             feature: "class expression",
         }),
         ExpressionKind::Yield { .. } => Err(Error::Unsupported { feature: "yield" }),
-        ExpressionKind::Await { .. } => Err(Error::Unsupported { feature: "await" }),
+        ExpressionKind::Await { argument } => eval_await(argument, env, heap, fuel),
         ExpressionKind::TaggedTemplate { .. } => Err(Error::Unsupported {
             feature: "tagged template",
         }),
@@ -765,13 +765,85 @@ fn invoke_function(
         def.captured_env()
             .extend_direct("__this__", this_value.clone())
     };
-    bind_parameters(def.params(), args, env_with_this, heap, fuel).and_then(
-        |(bind_outcome, env_after, heap, fuel)| match bind_outcome {
+    let is_async = def.is_async();
+    bind_parameters(def.params(), args, env_with_this, heap, fuel)
+        .and_then(|(bind_outcome, env_after, heap, fuel)| match bind_outcome {
             Outcome::Throw(v) => Ok((Outcome::Throw(v), heap, fuel)),
             Outcome::Normal(_) => {
                 crate::statement::execute_body(def.body(), &env_after, heap, fuel)
                     .map(|(completion, heap, fuel)| (completion_to_outcome(completion), heap, fuel))
             }
+        })
+        .map(|(outcome, heap, fuel)| {
+            if is_async {
+                wrap_async_completion(outcome, heap, fuel)
+            } else {
+                (outcome, heap, fuel)
+            }
+        })
+}
+
+/// v0.6: wrap an async function's body completion in a Promise.
+/// `Normal(v)` becomes a `Resolved(v)` promise; `Throw(v)` becomes
+/// a `Rejected(v)` promise.  The caller (or downstream `.then` /
+/// `await`) unwraps it via the v0.4 dispatch path.  Real-engine
+/// "async fn returns a Promise" semantics are exactly this; we
+/// just synchronously settle since the body has already run to
+/// completion in our tree-walking model.
+fn wrap_async_completion(outcome: Outcome, heap: Heap, fuel: Fuel) -> (Outcome, Heap, Fuel) {
+    let state = match outcome {
+        Outcome::Normal(value) => crate::promise::PromiseState::Resolved(value),
+        Outcome::Throw(value) => crate::promise::PromiseState::Rejected(value),
+    };
+    let (id, heap) = heap.alloc_promise(state);
+    (Outcome::Normal(Value::Promise(id)), heap, fuel)
+}
+
+/// v0.6: evaluate `await argument`.
+///
+/// - Awaiting a `Resolved(v)` promise unwraps to `Outcome::Normal(v)`.
+/// - Awaiting a `Rejected(v)` promise unwraps to `Outcome::Throw(v)`.
+/// - Awaiting a `Pending` promise throws a `TypeError`: in our
+///   synchronous tree-walking model there is no way to suspend
+///   the caller until the promise settles (no event loop, no
+///   continuations), so a Pending await is a programming error.
+///   Async-fn bodies that depend on Pending awaits should restructure
+///   around `.then` chaining or wait for boa-cat 0.7's
+///   continuation-passing transformation.
+/// - Awaiting a non-Promise value passes the value through
+///   unchanged (per spec: `await 42` evaluates to `42`).
+fn eval_await(argument: &Expression, env: &Env, heap: Heap, fuel: Fuel) -> EvalResult {
+    step(
+        eval(argument, env, heap, fuel),
+        |value, heap, fuel| match &value {
+            Value::Promise(id) => match heap.promise(*id).cloned() {
+                Some(crate::promise::PromiseState::Resolved(v)) => {
+                    Ok((Outcome::Normal(v), heap, fuel))
+                }
+                Some(crate::promise::PromiseState::Rejected(v)) => {
+                    Ok((Outcome::Throw(v), heap, fuel))
+                }
+                Some(crate::promise::PromiseState::Pending(_)) => Ok((
+                    Outcome::Throw(type_error(
+                        "cannot await a Pending promise in this engine's synchronous model",
+                    )),
+                    heap,
+                    fuel,
+                )),
+                None => Ok((
+                    Outcome::Throw(type_error("await target promise missing from heap")),
+                    heap,
+                    fuel,
+                )),
+            },
+            Value::Undefined
+            | Value::Null
+            | Value::Boolean(_)
+            | Value::Number(_)
+            | Value::String(_)
+            | Value::Object(_)
+            | Value::Function(_)
+            | Value::Native(_) => Ok((Outcome::Normal(value), heap, fuel)),
         },
     )
 }
@@ -1222,6 +1294,7 @@ fn eval_arrow_function(
         FunctionBody::Arrow(Box::new(arrow.body().clone())),
         env.clone(),
         true,
+        arrow.is_async(),
     );
     let (id, heap) = heap.alloc_function(def);
     Ok((Outcome::Normal(Value::Function(id)), heap, fuel))
@@ -1240,6 +1313,7 @@ fn eval_function_expression(
         FunctionBody::Statements(func.body().to_vec()),
         env.clone(),
         false,
+        func.is_async(),
     );
     let (id, heap) = heap.alloc_function(def);
     Ok((Outcome::Normal(Value::Function(id)), heap, fuel))

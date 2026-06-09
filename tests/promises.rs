@@ -339,3 +339,178 @@ mod microtask_driver {
             })
     }
 }
+
+mod await_and_async {
+    //! v0.6 `await` evaluator + async function call wrapping.
+
+    use super::{install_promise, run_eval};
+    use boa_cat::env::Env;
+    use boa_cat::heap::Heap;
+    use boa_cat::value::Value;
+    use boa_cat::{Error, PromiseState};
+
+    #[test]
+    fn await_resolved_promise_unwraps_value() -> Result<(), Error> {
+        let (env, heap) = install_promise(
+            &Env::empty(),
+            Heap::new(),
+            PromiseState::Resolved(Value::Number(42.0)),
+        );
+        // Wrap the await in an async IIFE since await is only
+        // syntactically valid inside async functions.  The IIFE
+        // returns a Promise; we then `.then` to capture the value.
+        let value = run_eval(
+            "let captured = -1;
+            (async function () { captured = await p; })();
+            captured",
+            env,
+            heap,
+        )?;
+        matches!(value, Value::Number(n) if (n - 42.0).abs() < 1e-9)
+            .then_some(())
+            .ok_or(Error::UncaughtException {
+                rendered: format!("expected 42 from await, got {value:?}"),
+            })
+    }
+
+    #[test]
+    fn await_rejected_promise_throws_value() -> Result<(), Error> {
+        let (env, heap) = install_promise(
+            &Env::empty(),
+            Heap::new(),
+            PromiseState::Rejected(Value::String("boom".to_owned())),
+        );
+        let value = run_eval(
+            "let caught = '';
+            (async function () {
+                try { await p; } catch (e) { caught = e; }
+            })();
+            caught",
+            env,
+            heap,
+        )?;
+        matches!(value, Value::String(ref s) if s == "boom")
+            .then_some(())
+            .ok_or(Error::UncaughtException {
+                rendered: format!("expected 'boom' caught from await, got {value:?}"),
+            })
+    }
+
+    #[test]
+    fn await_non_promise_passes_through() -> Result<(), Error> {
+        // Per spec, `await 42` is `42`.
+        let value = run_eval(
+            "let captured = -1;
+            (async function () { captured = await 7; })();
+            captured",
+            Env::empty(),
+            Heap::new(),
+        )?;
+        matches!(value, Value::Number(n) if (n - 7.0).abs() < 1e-9)
+            .then_some(())
+            .ok_or(Error::UncaughtException {
+                rendered: format!("expected 7 from `await 7`, got {value:?}"),
+            })
+    }
+
+    #[test]
+    fn await_pending_throws_typeerror() -> Result<(), Error> {
+        let (env, heap) = install_promise(
+            &Env::empty(),
+            Heap::new(),
+            PromiseState::Pending(Vec::new()),
+        );
+        // Our sync model: awaiting a Pending throws.  The async
+        // IIFE catches the TypeError into `caught`.
+        let value = run_eval(
+            "let caught = '';
+            (async function () {
+                try { await p; } catch (e) { caught = e; }
+            })();
+            caught",
+            env,
+            heap,
+        )?;
+        let is_type_error = matches!(value, Value::String(ref s) if s.starts_with("TypeError:"));
+        is_type_error.then_some(()).ok_or(Error::UncaughtException {
+            rendered: format!("expected TypeError caught, got {value:?}"),
+        })
+    }
+
+    #[test]
+    fn async_function_normal_return_wraps_in_resolved_promise() -> Result<(), Error> {
+        // ecma-parse-cat 0.2 doesn't accept `async function foo()`
+        // declarations at the statement level, so this chunk uses
+        // async arrow expressions (which already parse).  Calling
+        // an async arrow returns a Promise; `.then(cb)` observes
+        // the body's normal-return value.
+        let value = run_eval(
+            "let captured = -1;
+            const foo = async function () { return 7; };
+            foo().then(v => { captured = v; });
+            captured",
+            Env::empty(),
+            Heap::new(),
+        )?;
+        matches!(value, Value::Number(n) if (n - 7.0).abs() < 1e-9)
+            .then_some(())
+            .ok_or(Error::UncaughtException {
+                rendered: format!("expected 7 from resolved async return, got {value:?}"),
+            })
+    }
+
+    #[test]
+    fn async_function_throw_wraps_in_rejected_promise() -> Result<(), Error> {
+        let value = run_eval(
+            "let caught = '';
+            const bad = async function () { throw 'oops'; };
+            bad().then(null, e => { caught = e; });
+            caught",
+            Env::empty(),
+            Heap::new(),
+        )?;
+        matches!(value, Value::String(ref s) if s == "oops")
+            .then_some(())
+            .ok_or(Error::UncaughtException {
+                rendered: format!("expected 'oops' caught from rejected async, got {value:?}"),
+            })
+    }
+
+    #[test]
+    fn async_iife_returns_promise_typeof_object() -> Result<(), Error> {
+        // The IIFE itself evaluates to a Promise -- the type tag
+        // matches the v0.4 `typeof Value::Promise` -> "object".
+        let value = run_eval(
+            "typeof (async function () { return 1; })()",
+            Env::empty(),
+            Heap::new(),
+        )?;
+        matches!(value, Value::String(ref s) if s == "object")
+            .then_some(())
+            .ok_or(Error::UncaughtException {
+                rendered: format!("expected 'object', got {value:?}"),
+            })
+    }
+
+    #[test]
+    fn await_chained_on_resolved_async_call() -> Result<(), Error> {
+        // The body of `outer` awaits the result of `inner()`,
+        // which is a Resolved promise carrying 10.  After the
+        // await, outer's body adds 1 and returns 11.  Then
+        // `.then(cb)` observes 11.
+        let value = run_eval(
+            "let captured = -1;
+            const inner = async function () { return 10; };
+            const outer = async function () { const v = await inner(); return v + 1; };
+            outer().then(v => { captured = v; });
+            captured",
+            Env::empty(),
+            Heap::new(),
+        )?;
+        matches!(value, Value::Number(n) if (n - 11.0).abs() < 1e-9)
+            .then_some(())
+            .ok_or(Error::UncaughtException {
+                rendered: format!("expected 11 from awaited async chain, got {value:?}"),
+            })
+    }
+}
