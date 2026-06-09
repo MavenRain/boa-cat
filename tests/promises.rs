@@ -69,11 +69,9 @@ fn then_on_resolved_invokes_callback() -> Result<(), Error> {
 #[test]
 fn then_on_rejected_passes_through_value() -> Result<(), Error> {
     // Rejected promise with a `.then(onResolve)` (no on_reject)
-    // returns a new Rejected promise.  Chain `.then(null, cb)`
-    // (the spec-equivalent of `.catch(cb)`) to recover -- note
-    // ecma-parse-cat 0.2 rejects dot-member access on the
-    // reserved identifier `catch`, so this test uses the two-arg
-    // `.then` form.
+    // returns a new Rejected promise.  Chain `.catch(cb)` to
+    // recover (ecma-parse-cat 0.3 accepts reserved-word member
+    // access).
     let (env, heap) = install_promise(
         &Env::empty(),
         Heap::new(),
@@ -81,7 +79,7 @@ fn then_on_rejected_passes_through_value() -> Result<(), Error> {
     );
     let value = run_eval(
         "let recovered = '';
-        p.then(v => v + '!').then(null, e => { recovered = e; });
+        p.then(v => v + '!').catch(e => { recovered = e; });
         recovered",
         env,
         heap,
@@ -102,7 +100,7 @@ fn catch_on_resolved_passes_through_value() -> Result<(), Error> {
     );
     let value = run_eval(
         "let captured = -1;
-        p.then(null, e => 999).then(v => { captured = v; });
+        p.catch(e => 999).then(v => { captured = v; });
         captured",
         env,
         heap,
@@ -237,11 +235,11 @@ mod microtask_driver {
     }
 
     #[test]
-    fn reject_drains_queued_then_handler_second_arg() -> Result<(), Error> {
+    fn reject_drains_queued_catch_handler() -> Result<(), Error> {
         let (env, heap) = install_promise_with_hooks(PromiseState::Pending(Vec::new()));
         let value = run_eval(
             "let captured = '';
-            p.then(null, e => { captured = e; });
+            p.catch(e => { captured = e; });
             __reject_promise(p, 'boom');
             captured",
             env,
@@ -299,12 +297,12 @@ mod microtask_driver {
     #[test]
     fn callback_throw_becomes_chained_rejection() -> Result<(), Error> {
         // When an on_resolve callback throws, the chained promise
-        // adopts that throw as a Rejected state.  Use a
-        // `.then(null, cb)` on the child to recover.
+        // adopts that throw as a Rejected state.  Chain `.catch` on
+        // the child to recover.
         let (env, heap) = install_promise_with_hooks(PromiseState::Pending(Vec::new()));
         let value = run_eval(
             "let recovered = '';
-            p.then(v => { throw 'oops:' + v; }).then(null, e => { recovered = e; });
+            p.then(v => { throw 'oops:' + v; }).catch(e => { recovered = e; });
             __resolve_promise(p, 9);
             recovered",
             env,
@@ -357,11 +355,11 @@ mod await_and_async {
             PromiseState::Resolved(Value::Number(42.0)),
         );
         // Wrap the await in an async IIFE since await is only
-        // syntactically valid inside async functions.  The IIFE
-        // returns a Promise; we then `.then` to capture the value.
+        // syntactically valid inside async functions.  v0.7 picks
+        // up ecma-parse-cat 0.3 so the natural arrow form parses.
         let value = run_eval(
             "let captured = -1;
-            (async function () { captured = await p; })();
+            (async () => { captured = await p; })();
             captured",
             env,
             heap,
@@ -382,7 +380,7 @@ mod await_and_async {
         );
         let value = run_eval(
             "let caught = '';
-            (async function () {
+            (async () => {
                 try { await p; } catch (e) { caught = e; }
             })();
             caught",
@@ -401,7 +399,7 @@ mod await_and_async {
         // Per spec, `await 42` is `42`.
         let value = run_eval(
             "let captured = -1;
-            (async function () { captured = await 7; })();
+            (async () => { captured = await 7; })();
             captured",
             Env::empty(),
             Heap::new(),
@@ -424,7 +422,7 @@ mod await_and_async {
         // IIFE catches the TypeError into `caught`.
         let value = run_eval(
             "let caught = '';
-            (async function () {
+            (async () => {
                 try { await p; } catch (e) { caught = e; }
             })();
             caught",
@@ -439,14 +437,12 @@ mod await_and_async {
 
     #[test]
     fn async_function_normal_return_wraps_in_resolved_promise() -> Result<(), Error> {
-        // ecma-parse-cat 0.2 doesn't accept `async function foo()`
-        // declarations at the statement level, so this chunk uses
-        // async arrow expressions (which already parse).  Calling
-        // an async arrow returns a Promise; `.then(cb)` observes
-        // the body's normal-return value.
+        // v0.7: top-level `async function foo() { ... }`
+        // declarations now parse natively, alongside `async () =>`
+        // arrow forms.
         let value = run_eval(
             "let captured = -1;
-            const foo = async function () { return 7; };
+            async function foo() { return 7; }
             foo().then(v => { captured = v; });
             captured",
             Env::empty(),
@@ -463,8 +459,8 @@ mod await_and_async {
     fn async_function_throw_wraps_in_rejected_promise() -> Result<(), Error> {
         let value = run_eval(
             "let caught = '';
-            const bad = async function () { throw 'oops'; };
-            bad().then(null, e => { caught = e; });
+            async function bad() { throw 'oops'; }
+            bad().catch(e => { caught = e; });
             caught",
             Env::empty(),
             Heap::new(),
@@ -478,13 +474,9 @@ mod await_and_async {
 
     #[test]
     fn async_iife_returns_promise_typeof_object() -> Result<(), Error> {
-        // The IIFE itself evaluates to a Promise -- the type tag
-        // matches the v0.4 `typeof Value::Promise` -> "object".
-        let value = run_eval(
-            "typeof (async function () { return 1; })()",
-            Env::empty(),
-            Heap::new(),
-        )?;
+        // The IIFE itself evaluates to a Promise, matching the v0.4
+        // `typeof Value::Promise` -> "object".
+        let value = run_eval("typeof (async () => 1)()", Env::empty(), Heap::new())?;
         matches!(value, Value::String(ref s) if s == "object")
             .then_some(())
             .ok_or(Error::UncaughtException {
@@ -500,8 +492,8 @@ mod await_and_async {
         // `.then(cb)` observes 11.
         let value = run_eval(
             "let captured = -1;
-            const inner = async function () { return 10; };
-            const outer = async function () { const v = await inner(); return v + 1; };
+            async function inner() { return 10; }
+            async function outer() { const v = await inner(); return v + 1; }
             outer().then(v => { captured = v; });
             captured",
             Env::empty(),

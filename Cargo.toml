@@ -1,8 +1,8 @@
 [package]
 name = "boa-cat"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2024"
-description = "Tree-walking ECMAScript interpreter built on ecma-syntax-cat.  v0.6.0 adds `await` evaluator dispatch + async function call wrapping (async track chunk 3 of 5-7): `await Resolved(v)` -> `v`, `await Rejected(v)` -> throw `v`, `await Pending` -> TypeError (no continuation in the synchronous tree-walking model), `await non_promise` -> pass through.  Calling an async function (`FunctionDef::is_async()` flag, threaded from `Function::is_async()` / `ArrowFunction::is_async()`) wraps the body's normal completion in a `Resolved` promise and its throw completion in a `Rejected` promise."
+description = "Tree-walking ECMAScript interpreter built on ecma-syntax-cat.  v0.7.0 bumps to ecma-parse-cat 0.3 so the async track's tests can drop their `(async function () { ... })()` IIFE workarounds and use natural `async () => body` arrow syntax + `obj.catch(cb)` dot-member access.  No engine source change: the AST variants for these forms have been handled since v0.6; this release picks up the parser support."
 license = "MIT OR Apache-2.0"
 keywords = ["ecmascript", "javascript", "interpreter", "boa", "type-driven"]
 categories = ["development-tools", "compilers"]
@@ -11,7 +11,7 @@ categories = ["development-tools", "compilers"]
 comp-cat-rs = "0.5"
 ecma-syntax-cat = "0.1"
 ecma-lex-cat = "0.1"
-ecma-parse-cat = "0.2"
+ecma-parse-cat = "0.3"
 
 [dev-dependencies]
 proptest = "1"
