@@ -69,3 +69,46 @@ fn calls_native_returning_object() -> Result<(), Error> {
     );
     Ok(())
 }
+
+#[test]
+fn new_on_native_returning_object_uses_returned_object() -> Result<(), Error> {
+    let value = run_with_natives(
+        "const p = new pair(1, 2); p.first + p.second",
+        vec![("pair", make_pair)],
+    )?;
+    assert!(
+        matches!(value, Value::Number(n) if (n - 3.0).abs() < 1e-9),
+        "got {value:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn new_on_native_returning_non_object_falls_back_to_this() -> Result<(), Error> {
+    // `addOne` returns Value::Number; per the spec, `new` on a
+    // constructor that returns a primitive should ignore the
+    // returned value and yield `this` (which is the freshly
+    // allocated empty Object).  `typeof` confirms this is an
+    // Object, not the Number addOne returned.
+    let value = run_with_natives("typeof (new addOne(41))", vec![("addOne", add_one)])?;
+    assert!(
+        matches!(value, Value::String(ref s) if s == "object"),
+        "got {value:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn new_on_native_passes_args_to_native_fn() -> Result<(), Error> {
+    // `pair(a, b)` reads args[0] / args[1]; `new pair(1, 2)`
+    // should land them in the constructor body the same way.
+    let value = run_with_natives(
+        "(new pair('alpha', 'beta')).first",
+        vec![("pair", make_pair)],
+    )?;
+    assert!(
+        matches!(value, Value::String(ref s) if s == "alpha"),
+        "got {value:?}"
+    );
+    Ok(())
+}

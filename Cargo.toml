@@ -1,8 +1,8 @@
 [package]
 name = "boa-cat"
-version = "0.7.1"
+version = "0.7.2"
 edition = "2024"
-description = "Tree-walking ECMAScript interpreter built on ecma-syntax-cat.  v0.7.1 promotes `expression::call_function` from `pub(crate)` to `pub` so embedder code (e.g. `web-api-cat`'s `addEventListener` / `dispatchEvent`) can invoke user-supplied JS callbacks from a `NativeFn` without duplicating the dispatch logic.  No behavior change; one-line visibility unlock."
+description = "Tree-walking ECMAScript interpreter built on ecma-syntax-cat.  v0.7.2 lands three integration tests pinning down the existing `new SomeNativeFn(args)` dispatch path: `expression::construct` allocates a fresh empty Object as `this`, hands it to `call_function`, and honours the spec's \"return the Object the constructor produced, else fall back to `this`\" semantics.  Embedders (e.g. `web-api-cat`'s `Event` / `CustomEvent` constructors) can now rely on this surface without reverse-engineering the implementation.  No source change."
 license = "MIT OR Apache-2.0"
 keywords = ["ecmascript", "javascript", "interpreter", "boa", "type-driven"]
 categories = ["development-tools", "compilers"]
