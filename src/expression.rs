@@ -719,7 +719,30 @@ fn collect_arguments(
     )
 }
 
-pub(crate) fn call_function(
+/// Invoke `callee` with `this_value` and `args`, returning the
+/// usual `(Outcome, Heap, Fuel)` triple.  Public since v0.7.1 so
+/// embedder code (e.g. `web-api-cat`'s `addEventListener` /
+/// `dispatchEvent`) can call user-supplied JS callbacks from a
+/// `NativeFn` without duplicating the dispatch logic.
+///
+/// Behaviour:
+///
+/// - `Value::Function(id)`: looks `id` up in the heap and
+///   invokes the function with a fresh scope chain extending the
+///   captured env with the parameter bindings; arrow functions
+///   inherit `this` from their captured lexical scope rather than
+///   `this_value`.
+/// - `Value::Native(fn_ptr)`: calls `fn_ptr(args, this_value,
+///   heap, fuel)` directly.
+/// - Any other value: returns `Outcome::Throw(TypeError)`
+///   matching the spec's "x is not a function" semantics.
+///
+/// # Errors
+///
+/// Propagates `Error` from the underlying function body
+/// evaluation (e.g. `Error::FuelExhausted`).  Thrown JS values
+/// surface as `Outcome::Throw`, not `Err`.
+pub fn call_function(
     callee: &Value,
     this_value: &Value,
     args: Vec<Value>,

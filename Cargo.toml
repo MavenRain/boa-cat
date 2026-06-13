@@ -1,8 +1,8 @@
 [package]
 name = "boa-cat"
-version = "0.7.0"
+version = "0.7.1"
 edition = "2024"
-description = "Tree-walking ECMAScript interpreter built on ecma-syntax-cat.  v0.7.0 bumps to ecma-parse-cat 0.3 so the async track's tests can drop their `(async function () { ... })()` IIFE workarounds and use natural `async () => body` arrow syntax + `obj.catch(cb)` dot-member access.  No engine source change: the AST variants for these forms have been handled since v0.6; this release picks up the parser support."
+description = "Tree-walking ECMAScript interpreter built on ecma-syntax-cat.  v0.7.1 promotes `expression::call_function` from `pub(crate)` to `pub` so embedder code (e.g. `web-api-cat`'s `addEventListener` / `dispatchEvent`) can invoke user-supplied JS callbacks from a `NativeFn` without duplicating the dispatch logic.  No behavior change; one-line visibility unlock."
 license = "MIT OR Apache-2.0"
 keywords = ["ecmascript", "javascript", "interpreter", "boa", "type-driven"]
 categories = ["development-tools", "compilers"]
